@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Commons Uploads → CSV</title>
+  <style>
+    :root{--bg:#0b1020;--card:#121935;--ink:#e8ecff;--muted:#9aa3c7;--accent:#7aa2ff;--ok:#4ade80;--warn:#fbbf24}
+    html,body{height:100%}
+    body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#1a2455,transparent),linear-gradient(180deg,#0a0f24,#0b0f21 40%,#0b1020 100%);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,"Noto Sans",sans-serif}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    h1{font-size:28px;margin:0 0 8px}
+    p.lead{margin:0 0 18px;color:var(--muted)}
+    .card{background:linear-gradient(180deg,var(--card),#0f1730);border:1px solid #1c2750;border-radius:18px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    label{display:block;font-weight:600;margin-bottom:6px}
+    input[type=text]{width:100%;padding:12px 14px;border-radius:12px;border:1px solid #2a376e;background:#0c1330;color:var(--ink)}
+    .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}
+    button{border:0;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer;background:linear-gradient(180deg,#2b57f5,#2146cf);color:white}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .hint{font-size:13px;color:var(--muted)}
+    .log{margin-top:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;white-space:pre-wrap;color:#c9d2ff}
+    .table{margin-top:16px;max-height:360px;overflow:auto;border:1px solid #1c2750;border-radius:12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px 10px;border-bottom:1px solid #1c2750}
+    th{position:sticky;top:0;background:#0e1533;text-align:left}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#11215b;color:#a8b7ff;font-size:12px}
+    .small{font-size:12px;color:var(--muted)}
+    a{color:var(--accent)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Wikimedia Commons — User uploads → CSV</h1>
+    <p class="lead">Enter a Commons username. This tool queries the official MediaWiki API and exports all their <em>uploads</em> as a CSV.</p>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label for="user">Commons username</label>
+          <input id="user" type="text" placeholder="e.g. Akbarali" />
+          <div class="hint">Only original uploads are returned (namespace File). Uses <code>list=allimages&aiuser=</code> behind the scenes.</div>
+        </div>
+        <div>
+          <button id="go">Fetch & Export CSV</button>
+        </div>
+      </div>
+      <div class="log" id="log"></div>
+      <div id="preview" class="table" style="display:none">
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Timestamp (UTC)</th>
+              <th>Uploader</th>
+              <th>Size (bytes)</th>
+              <th>Width</th>
+              <th>Height</th>
+              <th>MIME</th>
+              <th>Media type</th>
+              <th>SHA1</th>
+              <th>URL</th>
+              <th>Description URL</th>
+              <th>Comment</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p class="small">Tip: very large accounts may take a minute to paginate (500 records per request). Data is fetched directly from <code>commons.wikimedia.org</code> with CORS via <code>origin=*</code>.</p>
+  </div>
+
+<script>
+const api = 'https://commons.wikimedia.org/w/api.php';
+const log = (msg)=>{document.getElementById('log').textContent = msg};
+const escCSV = (v)=>{
+  if(v===null||v===undefined) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+};
+
+async function fetchAllUploads(username){
+  const paramsBase = {
+    action: 'query',
+    format: 'json',
+    list: 'allimages',
+    aisort: 'timestamp',
+    aidir: 'older', // newest to oldest
+    aiuser: username,
+    ailimit: '500', // max per request for non-bots
+    aiprop: [
+      'timestamp','user','url','size','sha1','mime','mediatype','comment','canonicaltitle'
+    ].join('|')
+  };
+
+  let cont = null;
+  const out = [];
+  let pages = 0, total = 0;
+
+  do{
+    const params = new URLSearchParams({...paramsBase, origin: '*'});
+    if(cont){ params.set('aicontinue', cont); }
+
+    const res = await fetch(api + '?' + params.toString());
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+
+    const items = (data.query && data.query.allimages) ? data.query.allimages : [];
+    items.forEach(it=>{
+      out.push({
+        title: it.canonicaltitle || it.name || '',
+        timestamp: it.timestamp || '',
+        user: it.user || '',
+        size: it.size ?? '',
+        width: it.width ?? '',
+        height: it.height ?? '',
+        mime: it.mime || '',
+        mediatype: it.mediatype || '',
+        sha1: it.sha1 || '',
+        url: it.url || '',
+        descriptionurl: it.descriptionurl || '',
+        comment: it.comment || ''
+      });
+    });
+
+    total += items.length; pages += 1;
+    log(`Fetched ${total} uploads… (page ${pages}${data.continue?'+':''})`);
+    cont = data.continue && data.continue.aicontinue ? data.continue.aicontinue : null;
+  } while(cont);
+
+  return out;
+}
+
+function renderPreview(rows){
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  const first = rows.slice(0, Math.min(50, rows.length));
+  for(const r of first){
+    const tr = document.createElement('tr');
+    const cells = [r.title, r.timestamp, r.user, r.size, r.width, r.height, r.mime, r.mediatype, r.sha1, r.url, r.descriptionurl, r.comment];
+    for(const c of cells){
+      const td = document.createElement('td');
+      td.textContent = (c==null? '': String(c));
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  document.getElementById('preview').style.display = rows.length ? 'block' : 'none';
+}
+
+function toCSV(rows){
+  const headers = ['title','timestamp','user','size','width','height','mime','mediatype','sha1','url','descriptionurl','comment'];
+  const lines = [headers.join(',')];
+  for(const r of rows){
+    lines.push(headers.map(h=>escCSV(r[h])).join(','));
+  }
+  return lines.join('\n');
+}
+
+function downloadCSV(csv, filename){
+  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.style.display='none';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 0);
+}
+
+async function run(){
+  const username = document.getElementById('user').value.trim();
+  if(!username){ alert('Please enter a Commons username'); return; }
+  const btn = document.getElementById('go');
+  btn.disabled = true; log('Starting…');
+  try{
+    const rows = await fetchAllUploads(username);
+    log(`Done. Total uploads: ${rows.length}. Preparing CSV…`);
+    renderPreview(rows);
+    const csv = toCSV(rows);
+    const safe = username.replace(/[^A-Za-z0-9_\-\.]+/g,'_');
+    downloadCSV(csv, `commons-uploads_${safe}.csv`);
+    log(`Exported CSV for @${username}. Preview shows first ${Math.min(50, rows.length)} rows below.`);
+  }catch(err){
+    console.error(err);
+    log('Error: '+err.message+"\nIf this persists, check the username, or try again later.");
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('go').addEventListener('click', run);
+
+// Support pressing Enter in the input
+const input = document.getElementById('user');
+input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ run(); }});
+</script>
+</body>
+</html>
